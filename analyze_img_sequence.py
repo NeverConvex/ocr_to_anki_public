@@ -8,7 +8,7 @@ import time, os, pathlib, glob, string, json, path, warnings, random
 from collections import defaultdict
 
 # Home-grown modules
-import google_ocr, easyocr
+import google_ocr
 import chrome2anki_repo.util as c2a_util
 
 # General TODO: add textract, tesseract support (though early tests with Tesseract were not encouraging)
