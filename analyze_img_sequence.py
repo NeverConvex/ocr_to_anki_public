@@ -164,7 +164,6 @@ def extract_text_from_img_sequence(target_folder="test/sequence_sample_images", 
     if filter_ocr:
         img_paths = removeImagesWithoutCJK(img_paths, filter_ocr)
         print(f"After OCR filtering, {len(img_paths)} remain in input image sequence")
-        raise NotImplementedError(f"TEST")
     img_paths = img_paths if not end_num else img_paths[:end_num]
     img_paths = img_paths[start_num:]
     num_imgs = len(img_paths)
