@@ -1,4 +1,4 @@
-Primarily in `analyze_image_sequence.py`, this repository provides functions supporting a workflow for building language-study Anki cards:
+Primarily in `analyze_image_sequence.py`, this repository provides functions supporting a workflow for building language-study [Anki](https://apps.ankiweb.net/) digital flash cards:
 
 1. Begins with an image sequence (provided by user; an example image sequence is provided in `test/sequence_sample_images.zip`), where each image follows a convention with filenames ending in `fname<FRAMENUM>.<FILETYPE>`
 2. An OCR system (currently supported: Google Vision, EasyOCR) is invoked to extract text from each image in the sequence
