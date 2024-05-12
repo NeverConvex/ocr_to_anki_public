@@ -225,6 +225,7 @@ out_file="test/STEP3_tokens_translated.json"):
     with open(read_file, 'r', encoding='utf8') as rf:
         tokenized_json = json.load(rf)
 
+    tokens_queried = set()
     img2token2sentence2defns = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
     total_num_tokens = sum([len(sentence_tokens) for (input_sentence, sentence_tokens) in tokenized_json.values()])
     cur_token_index = 1
@@ -232,12 +233,14 @@ out_file="test/STEP3_tokens_translated.json"):
         for j, token in enumerate(sentence_tokens):
             #if not allRomanOrNumber(token):
             if any([is_cjk(c) for c in token]):
-                print(f"Looking for a definition for token # {cur_token_index} of {total_num_tokens}:  {token}")
-                jisho_guess = c2a_util.get_word_object(token)
-                if jisho_guess and 'data' in jisho_guess.keys() and jisho_guess['data']:
-                    img2token2sentence2defns[img_path][token][input_sentence] = jisho_guess['data']
-                print(f"Jisho returned: {jisho_guess}")
-                time.sleep(delay) # Don't want to accidentally DDOS the Jisho folks
+                if token not in tokens_queried:
+                    tokens_queried.add(token)
+                    print(f"Looking for a definition for token # {cur_token_index} of {total_num_tokens}:  {token}")
+                    jisho_guess = c2a_util.get_word_object(token)
+                    if jisho_guess and 'data' in jisho_guess.keys() and jisho_guess['data']:
+                        img2token2sentence2defns[img_path][token][input_sentence] = jisho_guess['data']
+                    print(f"Jisho returned: {jisho_guess}")
+                    time.sleep(delay) # Don't want to accidentally DDOS the Jisho folks
             cur_token_index += 1
             if num_token_translations and cur_token_index >= num_token_translations:
                 break
