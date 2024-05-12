@@ -52,3 +52,7 @@ The format of these cards isn't unusual; you should be able to easily make your 
 `<img src={{ImgContext}}>`
 
 where `ImgContext` is the name given to the Anki `Field` corresponding to the final column of the Anki-importable txt produced by Step 4 above. You should make sure this is properly mapped when importing the Anki-importable txt into Anki, of course.
+
+# Miscellaneous Notes
+
+Import/card testing was performed with Anki version 24.04.1.
