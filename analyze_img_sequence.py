@@ -8,7 +8,7 @@ import time, os, pathlib, glob, string, json, path, warnings, random
 from collections import defaultdict
 
 # Home-grown modules
-import google_ocr
+import google_ocr, easyocr
 import chrome2anki_repo.util as c2a_util
 
 # General TODO: add textract, tesseract support (though early tests with Tesseract were not encouraging)
@@ -23,9 +23,9 @@ def easy_ocr_pic_to_text(img_path, verbose=True):
 
 def ocr(img_path, ocr="google_ocr"):
     """
-        Wrapper for generic OCR system access, to extract string text from img
+    Wrapper for generic OCR system access, to extract string text from img
 
-        ocr options: google_ocr, easy_ocrtextract
+    ocr options: google_ocr, easy_ocrtextract
     """
     ocr_dict =  {
                     "google_ocr":google_ocr.pic_to_text,
@@ -36,7 +36,7 @@ def ocr(img_path, ocr="google_ocr"):
 
 def vec_dot(list1, list2):
     """
-        numpy operations often run into overflow errors with large screenshots, so we implement this to work only with Python BigInts.
+    numpy operations often run into overflow errors with large screenshots, so we implement this to work only with Python BigInts.
     """
     total = 0
     for val1, val2 in zip(list1, list2):
@@ -81,8 +81,12 @@ def is_cjk(char):
     ]
     return any([r["from"] <= ord(char) <= r["to"] for r in cjk_ranges])
 
-def find_sequence_uniques(target_folder="test/sequence_sample_images", img_type="jpeg",
-                            uniqueness_threshold=0.05, start_num=0, end_num=None, count_only=False):
+def find_sequence_uniques(target_folder="test/STEP0_sequence_sample_images_small", img_type="jpeg",
+uniqueness_threshold=0.05, start_num=0, end_num=None, count_only=False):
+    """
+    Given a target folder ending in frame<num>, inspects all images with suffix img_type and removes those that appear to be near-unique,
+    based on a normalized pixel-by-pixel abs diff compared to a threshold.
+    """
     uniques_save_fname = "unique_saves/" + target_folder.replace("/", "_") + '.txt'
     img_paths = sorted(glob.glob(f"{target_folder}/*.{img_type}"), key=lambda impath: getFrameNum(impath, img_type))
     img_paths = img_paths if not end_num else img_paths[:end_num]
@@ -142,17 +146,15 @@ def removeImagesWithoutCJK(img_paths, filter_ocr):
             subset_img_paths.append(img_path)
     return subset_img_paths
 
-def extract_text_from_img_sequence(target_folder="test/sequence_sample_images", img_type="jpeg",
-                            uniqueness_threshold=0.05, write_file="test/sequence_dump.txt", start_num=0, end_num=None, write_mode='a',
-                            delay=1, ocr_system="google_ocr", filter_ocr=None):
+def extract_text_from_img_sequence(target_folder="test/STEP0_sequence_sample_images_small", img_type="jpeg",
+uniqueness_threshold=0.05, write_file="test/STEP1_sequence_sample_images_small_dump.txt", start_num=0, end_num=None, write_mode='a',
+delay=1, ocr_system="google_ocr", filter_ocr=None):
     """
+    STEP 1
     Examines unique (within threshold) images in target_folder, feeds them to a selected OCR system (currently only Google Vision supported; adding
     EasyOCR), extract texts from them, and stores text in write_file, as well as a mapping from img paths to text in <write_file w/o suffix>.json.
-
-    Example run cmd (from Linux-based OS):
-
-        pname="sample_images"; python analyze_img_sequence.py extract_text_from_img_sequence --target_folder="test/sequence_${pname}" --write_file="test/sequence_dump_w_imgs_${pname}.txt" --write_mode='w'
     """
+
     # TODO 1. add ability to use specified ocr to pre-filter images for the other, only retaining images that have detected CJK text
     # TODO this is especially useful if an open-source OCR (EasyOCR seems promising) is accurate enough to identify presence of text, but
     # TODO not accurate enough to correctly extract it, (but, alternatives like Tesseract don't even seem to detect text reliably)
@@ -170,66 +172,70 @@ def extract_text_from_img_sequence(target_folder="test/sequence_sample_images", 
 
     img2text = {} # A dict mapping each filename to text OCR'd from it. Saved for reuse later to grab relevant imgs in CI estimation or Anki cards
     # TODO do we need to keep the wf writefile if we're also saving to img2text? img2text has strictly more information, but have to update later fxns..
-
-    with open(write_file, write_mode) as wf:
+    wf_name = write_file
+    with open(wf_name, write_mode) as wf:
         for i, img_path in enumerate(img_paths):
             img_text = google_ocr.pic_to_text(img_path)
             img2text[img_path] = img_text
             time.sleep(delay) # A bit unclear if Google OCR intentionally throttles too-fast request rates..
             print(f"For img_path # {i + start_num} of {num_imgs + start_num}, Google Vision OCR returned: {img_text}")
             wf.write(f"{img_text}\n")
-    wf_path_name, wf_ext = os.path.splitext(write_file)
-    with open(wf_path_name + ".json", 'w', encoding='utf-8') as wf:
+    wf_path_name, wf_ext = os.path.splitext(wf_name)
+    json_wf_name = wf_path_name + ".json"
+    with open(json_wf_name, 'w', encoding='utf-8') as wf:
         json.dump(img2text, wf, ensure_ascii=False)
     
-    print(f"Done writing extracted text to: {write_file}")
+    print(f"Done writing extracted text to:\n\t{wf_name}\n\t{json_wf_name}")
 
 def allRomanOrNumber(sentence):
     return np.all([c in string.printable for c in sentence])
 
-def tokenize_jp(read_file="test/sequence_dump.txt", write_file="test/tokenized_sequence_dump.txt"):
+def tokenize_jp(read_file="test/STEP1_sequence_dump.json", write_file="test/STEP2_tokenized_sequence_dump.json"):
     """
-    Tokenizes lines in sequence_dump. Only tokenizes a line
-    if it is detected as consisting at least one non-numeric character outside of [A-Za-z].
+    STEP 2
+    Tokenizes lines in sequence_dump. Only tokenizes a line if it is detected as containing at least one CJK character.
     """
     assert read_file != write_file
     jpp = JapaneseTokenizer.JumanppWrapper()
-    tokenized_lines = {} # sentence -> tokens map
-    with open(read_file, 'r') as rf:
-        input_lines = rf.readlines()        
+    tokens_dict = {} # img_path -> (sentence, tokens map)
+    #with open(read_file, 'r') as rf:
+    #    input_lines = rf.readlines()        
+    with open(read_file, 'r', encoding='utf8') as rf:
+        input_json = json.load(rf)
 
-    for i, input_line in enumerate(input_lines):
-        input_sentence = input_line.strip()
-        #if not allRomanOrNumber(input_sentence):
+    for i, (img_path, input_sentence) in enumerate(input_json.items()):
+        input_sentence = input_sentence.strip()
         if any([is_cjk(c) for c in input_sentence]):
-            print(f"Tokenizing input sentence # {i} of {len(input_lines)}")
+            print(f"Tokenizing input sentence # {i} of {len(input_json)}: {input_sentence}")
             tok = jpp.tokenize(input_sentence) 
             tokens_as_list = tok.convert_list_object() 
-            tokenized_lines[input_sentence] = tokens_as_list
+            tokens_dict[img_path] = (input_sentence, tokens_as_list)
     with open(write_file, 'w', encoding='utf8') as wf:
-        json.dump(tokenized_lines, wf, ensure_ascii=False) 
-    print(f"Wrote {len(tokenized_lines)} tokenized lines to: {write_file}")
+        json.dump(tokens_dict, wf, ensure_ascii=False) 
+    print(f"Wrote {len(tokens_dict)} tokenized lines to: {write_file}")
 
-def get_token_translations( read_file="test/tokenized_sequence_dump.txt", method="Jisho", num_token_translations=None, delay=1,
-                            out_file="test/tokens_translated.json"):
+def get_token_translations( read_file="test/STEP2_tokenized_sequence_dump.json", method="Jisho", num_token_translations=None, delay=1,
+out_file="test/STEP3_tokens_translated.json"):
     """
-    Looks up tokens in Jisho, DeepL, or Google Translate.
+    STEP 3
+    Looks up tokens in Jisho.
     """
+    # TODO add DeepL, Google Translate, ChatGPT, etc as translation options?
     assert read_file != out_file
     with open(read_file, 'r', encoding='utf8') as rf:
-        tokenized_lines = json.load(rf)
+        tokenized_json = json.load(rf)
 
-    token2sentence2defns = defaultdict(lambda: defaultdict(str))
-    total_num_tokens = sum([len(tokens) for tokens in tokenized_lines.values()])
+    img2token2sentence2defns = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
+    total_num_tokens = sum([len(sentence_tokens) for (input_sentence, sentence_tokens) in tokenized_json.values()])
     cur_token_index = 1
-    for i, (input_sentence, sentence_tokens) in enumerate(tokenized_lines.items()):
+    for i, (img_path, (input_sentence, sentence_tokens)) in enumerate(tokenized_json.items()):
         for j, token in enumerate(sentence_tokens):
             #if not allRomanOrNumber(token):
             if any([is_cjk(c) for c in token]):
                 print(f"Looking for a definition for token # {cur_token_index} of {total_num_tokens}:  {token}")
                 jisho_guess = c2a_util.get_word_object(token)
                 if jisho_guess and 'data' in jisho_guess.keys() and jisho_guess['data']:
-                    token2sentence2defns[token][input_sentence] = jisho_guess['data']
+                    img2token2sentence2defns[img_path][token][input_sentence] = jisho_guess['data']
                 print(f"Jisho returned: {jisho_guess}")
                 time.sleep(delay) # Don't want to accidentally DDOS the Jisho folks
             cur_token_index += 1
@@ -238,15 +244,16 @@ def get_token_translations( read_file="test/tokenized_sequence_dump.txt", method
         if num_token_translations and cur_token_index >= num_token_translations:
             break
     with open(out_file, 'w', encoding='utf8') as of:
-        json.dump(token2sentence2defns, of, ensure_ascii=False) 
-    print(f"Wrote {len(token2sentence2defns)} tokens' translations to: {out_file}")
+        json.dump(img2token2sentence2defns, of, ensure_ascii=False) 
+    print(f"Wrote {len(img2token2sentence2defns)} tokens' translations to: {out_file}")
 
-def generateAnkiImportableTxt(  read_file="test/tokens_translated.json", write_file="test/tokens_translated_anki_importable.txt",
-                                filter_files=["auxiliary_inputs/wanikani_all_vocab.txt", "auxiliary_inputs/jlpt_N2_to_N5_notWK.txt"],
-                                write_mode='a', respect_kana_only=True):
+def generateAnkiImportableTxt(  read_file="test/STEP3_tokens_translated.json", write_file="test/STEP4_tokens_translated_anki_importable.txt",
+filter_files=["auxiliary_inputs/wanikani_all_vocab.txt", "auxiliary_inputs/jlpt_N2_to_N5_notWK.txt"],
+write_mode='a', respect_kana_only=True, include_context_img=True):
     """
+    STEP 4
     Assumes tab delimiters with fields in order:
-        Expression Dfn Reading Grammar AddDefn Formality Tags
+        Expression Dfn Reading Grammar AddDefn Formality Tags [ImgName+suffix]
     filter_files are also assumed to be tab-delimiter; they will be checked for Expression, and Expression will only be added
     if it does not appear in any of the filter files.
 
@@ -254,8 +261,7 @@ def generateAnkiImportableTxt(  read_file="test/tokens_translated.json", write_f
                 (each card actually has several defns; we do this if the majority of them have 'kana only'; typically all-or-nothing)
     """
     assert read_file != write_file
-    # TODO consider adding the origin JP sentence itself as context to Anki card? Made a bit awkward by Google Vision OCR
-    # not necessarily grouping an entire search result on a single line, though
+    # TODO consider option for adding the origin JP sentence itself (w/o image) as context to Anki card?
     filter_exprs = set()
     for fname in filter_files:
         with open(fname, 'r') as rf:
@@ -268,57 +274,65 @@ def generateAnkiImportableTxt(  read_file="test/tokens_translated.json", write_f
     written_exprs = set()
     with open(write_file, write_mode) as wf:
         with open(read_file, 'r', encoding='utf8') as rf:
+            #img2token2sentence2defns[img_path][token][input_sentence] = jisho_guess['data']
             ddict = json.load(rf)
-            for token in ddict.keys():
-                for sentence in ddict[token].keys(): # Should always just be one of these
-                    jisho_dict = ddict[token][sentence][0] # First Jisho search result; currently ignore others
-                    #print(jisho_dict['japanese'][0])
-                    jp_keys = jisho_dict['japanese'][0].keys()
-                    pos = [s['parts_of_speech'] for s in jisho_dict['senses']]
-                    wiki_only = all(['Wikipedia definition' in p for p in pos])
-                    #if 'word' in jp_keys and 'reading' in jp_keys: # TODO hm, are we excluding kana-only but actual words?
-                    if 'reading' in jp_keys and not wiki_only:
-                        reading = jisho_dict['japanese'][0]['reading']
-                        kana_str = "Usually written using kana alone"
-                        kana_only_bools = [kana_str in s['tags'] for s in jisho_dict['senses']]
-                        kana_only = round(sum(kana_only_bools)/len(kana_only_bools))
-                        # NOTE that this may not match the requested expression, since Jisho has interpreted our request:
-                        expr = base_expr = reading
-                        if 'word' in jisho_dict['japanese'][0].keys():
-                            expr = base_expr = jisho_dict['japanese'][0]['word']
-                            if kana_only:
-                                expr = reading + ' (' + jisho_dict['japanese'][0]['word'] + ')'
-                                base_expr = reading
-                        if expr not in written_exprs and base_expr not in filter_exprs:
-                            written_exprs.add(expr)
-                            eng_dfns = ['; '.join(s['english_definitions']) for s in jisho_dict['senses']]
-                            eng_dfns = ' | '.join([f"{i}. {dfn_str}" for i, dfn_str in enumerate(eng_dfns)])
-                            parts_of_speech = ['; '.join(s['parts_of_speech']) for s in jisho_dict['senses']]
-                            parts_of_speech = ' | '.join([f"{i}. {pos_str}" for i, pos_str in enumerate(parts_of_speech)])
+            for img_path in ddict.keys():
+                for token in ddict[img_path].keys():
+                    for sentence in ddict[img_path][token].keys(): # Should always just be one of these
+                        jisho_dict = ddict[img_path][token][sentence][0] # First Jisho search result; currently ignore others
+                        #print(jisho_dict['japanese'][0])
+                        jp_keys = jisho_dict['japanese'][0].keys()
+                        pos = [s['parts_of_speech'] for s in jisho_dict['senses']]
+                        wiki_only = all(['Wikipedia definition' in p for p in pos])
+                        #if 'word' in jp_keys and 'reading' in jp_keys: # TODO hm, are we excluding kana-only but actual words?
+                        if 'reading' in jp_keys and not wiki_only:
                             reading = jisho_dict['japanese'][0]['reading']
-                            grammar = " "
-                            adddefn = " "
-                            formality = " "
-                            tags = " "
-                            write_vars = [expr, eng_dfns, parts_of_speech, reading, grammar, adddefn, formality, tags]
-                            write_line = '\t'.join(write_vars) + '\n'
-                            wf.write(write_line)
-                            lines_written += 1
+                            kana_str = "Usually written using kana alone"
+                            kana_only_bools = [kana_str in s['tags'] for s in jisho_dict['senses']]
+                            kana_only = round(sum(kana_only_bools)/len(kana_only_bools))
+                            # NOTE that this may not match the requested expression, since Jisho has interpreted our request:
+                            expr = base_expr = reading
+                            if 'word' in jisho_dict['japanese'][0].keys():
+                                expr = base_expr = jisho_dict['japanese'][0]['word']
+                                if kana_only:
+                                    expr = reading + ' (' + jisho_dict['japanese'][0]['word'] + ')'
+                                    base_expr = reading
+                            if expr not in written_exprs and base_expr not in filter_exprs:
+                                written_exprs.add(expr)
+                                eng_dfns = ['; '.join(s['english_definitions']) for s in jisho_dict['senses']]
+                                eng_dfns = ' | '.join([f"{i}. {dfn_str}" for i, dfn_str in enumerate(eng_dfns)])
+                                parts_of_speech = ['; '.join(s['parts_of_speech']) for s in jisho_dict['senses']]
+                                parts_of_speech = ' | '.join([f"{i}. {pos_str}" for i, pos_str in enumerate(parts_of_speech)])
+                                reading = jisho_dict['japanese'][0]['reading']
+                                grammar = " "
+                                adddefn = " "
+                                formality = " "
+                                tags = " "
+                                write_vars = [expr, eng_dfns, parts_of_speech, reading, grammar, adddefn, formality, tags]
+                                if include_context_img:
+                                    write_vars.append(os.path.basename(img_path))
+                                write_line = '\t'.join(write_vars) + '\n'
+                                wf.write(write_line)
+                                lines_written += 1
     print(f"Finished writing anki-importable version of token translations to: {write_file}")
     print(f"Total lines written: {lines_written}")
 
 def estimateOCRCorrectness( ocr_system="google_ocr", ci_perc=0.95, sample_size=9, nrows=3, ncols=3, imgs_out_folder="test/imgs",
-                            input_json_path=None, input_sequence_folder=None, img_type="jpg"):
+input_json_path=None, input_sequence_folder=None, img_type="jpg"):
     """
-        Displays sample_size images drawn uniformly i.i.d. from input_sequence_folder or input_json_path, whichever is specified. Presents OCR-extracted
-        text of these images to the user, prompting them to input indicate how many images had text correctly extracted. Modeling the percent of 
-        correctly OCR'd images (from the set of those available locally) as the success probability of a binomial distribution, presents a
-        ci_perc Clopper-Pearson confidence interval (exact, i.e., always achieves at least coverage probability, though can be quite conservative).
-        Primary purpose is to support decision-making about whether alternative competing commercial (e.g., google_ocr, textract) systems
-        are preferable to one another, or if an open-source alternative (e.g., easy_ocr, tesseract) may even be viable.
+    OPTIONAL STEP [outside of normal workflow]
 
-        Currently supported ocr_system options: None (but extract_text_from_img_sequence can be used to generate a suitable JSON)
-                (google_ocr, easy_ocr support to be added later, mimicking fxns above this one, primarily for small-scale testing)
+    Displays sample_size images drawn uniformly i.i.d. from input_sequence_folder or input_json_path, whichever is specified. Presents OCR-extracted
+    text of these images to the user, prompting them to input indicate how many images had text correctly extracted. Modeling the percent of 
+    correctly OCR'd images (from the set of those available locally) as the success probability of a binomial distribution, presents a
+    ci_perc Clopper-Pearson confidence interval (exact, i.e., always achieves at least coverage probability, though can be quite conservative).
+    Primary purpose is to support decision-making about whether alternative competing commercial (e.g., google_ocr, textract) systems
+    are preferable to one another, or if an open-source alternative (e.g., easy_ocr, tesseract) may even be viable.
+
+    Currently supported ocr_system options: None (but extract_text_from_img_sequence can be used to generate a suitable JSON)
+            (google_ocr, easy_ocr support to be added later, mimicking fxns above this one, primarily for small-scale testing)
+
+    Note: input_json_path should be a json as output by STEP 1: extract_text_from_img_sequence
     """
     assert 1<=sample_size
     assert nrows * ncols <= 9 # Need a more flexible user input system to support user grading of image grids with >=10 images
@@ -460,10 +474,22 @@ def estimateOCRCorrectness( ocr_system="google_ocr", ci_perc=0.95, sample_size=9
     # TODO implement second, less conservative (but inexact) CI
 
 def main():
+    """
+    Functions in this script are meant to be invoked from cmd-line via Fire. Simple example of processing pipeline, from OCR to Anki-importable txt:
+    STEP 1:     python analyze_img_sequence.py extract_text_from_img_sequence --filter_ocr="easy_ocr" --img_type="jpg"
+    STEP 2:     python analyze_img_sequence.py tokenize_jp --read_file="test/STEP1_sequence_sample_images_small_dump.json" --write_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json"
+    STEP 3:     python analyze_img_sequence.py get_token_translations --read_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json" --out_file="test/STEP3_tokens_translated_sample_images_small.json"
+    STEP 4:     python analyze_img_sequence.py generateAnkiImportableTxt --read_file="test/STEP3_tokens_translated_sample_images_small.json" --write_file="test/STEP4_tokens_translated_anki_importable_sample_images_small.txt"
+
+    NOTE: for images to work properly in Anki, the source images in the STEP 1 <target_folder> should be copied to %APPADATA%\Anki2\ for Windows, to
+          ~/Library/Application/Support/Anki2/ for Mac, or to ~./local/share/Anki2/ for Linux. (These locations were taken from
+          https://docs.ankiweb.net/files.html#file-locations as of May 2024, so if they do not seem to work, it is possible Anki updated its storage
+          locations)
+    """
     raise NotImplementedError(f"Do not run this script from main(). Call a fxn from cmd-line via Fire.")
 
 if __name__ == "__main__":
     """
-        Example run cmds:
+    Example run cmds:
     """
     fire.Fire()
