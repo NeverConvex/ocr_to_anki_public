@@ -28,6 +28,7 @@ def resize_all_images(input_folder, output_folder, downsize_factor=None, new_siz
         if downsize_factor:
             new_size = (orig_w/downsize_factor, orig_h/downsize_factor)
         img.thumbnail(new_size, Image.Resampling.LANCZOS)
+        img_basename, orig_ext = os.path.splitext(os.path.basename(input_img_path))
         img.save(f"{output_folder}/{img_basename}.jpg")
 
 def copyOnlyFilesInAnkiImportable(path_to_importable, input_folder, output_folder):
