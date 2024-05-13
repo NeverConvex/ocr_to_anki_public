@@ -13,6 +13,23 @@ import chrome2anki_repo.util as c2a_util
 
 # General TODO: add textract, tesseract support (though early tests with Tesseract were not encouraging)
 
+def resize_all_images(input_folder, output_folder, downsize_factor=None, new_size=(None, None), img_type="jpeg"):
+    """
+    A helper fxn used outside the normal workflow. Storing full-resolution images in Anki media can be costly; this allows us to create mass-downscaled
+    copies of images, without changing their names, so that we can copy the cheaper images over into Anki's media folder.
+    """
+    # NOTE: does not preserve image type, nor suffix, always forces output to jpg
+    assert downsize_factor or new_size[0]
+    input_img_paths = glob.glob(f"{input_folder}/*.{img_type}")
+    print(f"resize_all_images detected # {len(input_img_paths)} input images")
+    for input_img_path in input_img_paths:
+        img = Image.open(input_img_path)
+        orig_w, orig_h = img.size
+        if downsize_factor:
+            new_size = (orig_w/downsize_factor, orig_h/downsize_factor)
+        img.thumbnail(new_size, Image.Resampling.LANCZOS)
+        img.save(f"{output_folder}/{os.path.basename(input_img_path)}.jpg")
+
 def easy_ocr_pic_to_text(img_path, verbose=True):
     reader = easyocr.Reader(['ja'])
     res = reader.readtext(img_path)
