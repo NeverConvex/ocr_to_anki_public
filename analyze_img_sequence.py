@@ -4,7 +4,7 @@ import JapaneseTokenizer, fire, cv2, easyocr
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 # Standard modules
-import time, os, pathlib, glob, string, json, path, warnings, random
+import time, os, pathlib, glob, string, json, path, warnings, random, shutil
 from collections import defaultdict
 
 # Home-grown modules
@@ -28,7 +28,15 @@ def resize_all_images(input_folder, output_folder, downsize_factor=None, new_siz
         if downsize_factor:
             new_size = (orig_w/downsize_factor, orig_h/downsize_factor)
         img.thumbnail(new_size, Image.Resampling.LANCZOS)
-        img.save(f"{output_folder}/{os.path.basename(input_img_path)}.jpg")
+        img.save(f"{output_folder}/{img_basename}.jpg")
+
+def copyOnlyFilesInAnkiImportable(path_to_importable, input_folder, output_folder):
+    with open(path_to_importable, 'r', encoding='utf-8') as rf:
+        lines = rf.readlines()
+    img_names = [l.strip().split('\t')[-1] for l in lines]
+    for img_name in img_names:
+        img_basename, orig_ext = os.path.splitext(img_name)
+        shutil.copyfile(f"{input_folder}/{img_basename}.jpg", f"{output_folder}/{img_name}") # NOTE: .jpg assumes resized fxn was called
 
 def easy_ocr_pic_to_text(img_path, verbose=True):
     reader = easyocr.Reader(['ja'])
