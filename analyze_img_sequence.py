@@ -63,12 +63,9 @@ def is_cjk(char):
     Used to check for presence of at least one Japanese kanji/kana. See: https://stackoverflow.com/a/30070664/4286018
     This code is near-identical to the stack answer, with minor renaming for readability/avoiding reserved variable names
 
-    To dig into the source a bit more, see https://www.fileformat.info/info/unicode/block/index.htm It seems many Kanji are
+    See https://www.fileformat.info/info/unicode/block/index.htm It seems many Kanji are
     stored in unicode under a general "compatibility ideographs" (even if Kanji aren't exactly ideographs) label, with a few
     extra categories for hiragana, katana, and certain radicals (used e.g. as dictionary headers, presumably for kanji search).
-
-    I am currently unclear on the reason for including blocks marked ??? or "included as of Unicode 8.0". Once I understnand these
-    unicode blocks better, these may be removed.
     """
     # NOTE some argument in stack comments about whether this leaves a character off, maybe worth digging into TODO
     cjk_ranges = [
@@ -79,12 +76,18 @@ def is_cjk(char):
       {'from': ord(u'\u3040'), 'to': ord(u'\u309f')},           # Japanese Hiragana
       {"from": ord(u"\u30a0"), "to": ord(u"\u30ff")},           # Japanese Katakana
       {"from": ord(u"\u2e80"), "to": ord(u"\u2eff")},           # cjk radicals supplement
-      {"from": ord(u"\u4e00"), "to": ord(u"\u9fff")},           # ???
-      {"from": ord(u"\u3400"), "to": ord(u"\u4dbf")},           # ???
-      {"from": ord(u"\U00020000"), "to": ord(u"\U0002a6df")},   # ???
-      {"from": ord(u"\U0002a700"), "to": ord(u"\U0002b73f")},   # ???
-      {"from": ord(u"\U0002b740"), "to": ord(u"\U0002b81f")},   # ???
-      {"from": ord(u"\U0002b820"), "to": ord(u"\U0002ceaf")}    # included as of Unicode 8.0
+      # CJK Unified Ideographs; https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_(Unicode_block)
+      {"from": ord(u"\u4e00"), "to": ord(u"\u9fff")},           
+      # CJK Unified Ideographs Extension A; https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_Extension_A
+      {"from": ord(u"\u3400"), "to": ord(u"\u4dbf")},
+      # CJK Unified Ideographs Extension B; https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_Extension_B
+      {"from": ord(u"\U00020000"), "to": ord(u"\U0002a6df")},
+      # CJK Unified Ideographs Extension C; https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_Extension_C
+      {"from": ord(u"\U0002a700"), "to": ord(u"\U0002b73f")},
+      # CJK Unified Ideographs Extension D; https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_Extension_D
+      {"from": ord(u"\U0002b740"), "to": ord(u"\U0002b81f")},
+      # CJK Unified Ideographs Extension E; https://en.wikipedia.org/wiki/CJK_Unified_Ideographs_Extension_E
+      {"from": ord(u"\U0002b820"), "to": ord(u"\U0002ceaf")}
     ]
     return any([r["from"] <= ord(char) <= r["to"] for r in cjk_ranges])
 
