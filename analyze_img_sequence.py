@@ -62,22 +62,29 @@ def is_cjk(char):
     """
     Used to check for presence of at least one Japanese kanji/kana. See: https://stackoverflow.com/a/30070664/4286018
     This code is near-identical to the stack answer, with minor renaming for readability/avoiding reserved variable names
+
+    To dig into the source a bit more, see https://www.fileformat.info/info/unicode/block/index.htm It seems many Kanji are
+    stored in unicode under a general "compatibility ideographs" (even if Kanji aren't exactly ideographs) label, with a few
+    extra categories for hiragana, katana, and certain radicals (used e.g. as dictionary headers, presumably for kanji search).
+
+    I am currently unclear on the reason for including blocks marked ??? or "included as of Unicode 8.0". Once I understnand these
+    unicode blocks better, these may be removed.
     """
     # NOTE some argument in stack comments about whether this leaves a character off, maybe worth digging into TODO
     cjk_ranges = [
-      {"from": ord(u"\u3300"), "to": ord(u"\u33ff")},         # compatibility ideographs
-      {"from": ord(u"\ufe30"), "to": ord(u"\ufe4f")},         # compatibility ideographs
-      {"from": ord(u"\uf900"), "to": ord(u"\ufaff")},         # compatibility ideographs
-      {"from": ord(u"\U0002F800"), "to": ord(u"\U0002fa1f")}, # compatibility ideographs
-      {'from': ord(u'\u3040'), 'to': ord(u'\u309f')},         # Japanese Hiragana
-      {"from": ord(u"\u30a0"), "to": ord(u"\u30ff")},         # Japanese Katakana
-      {"from": ord(u"\u2e80"), "to": ord(u"\u2eff")},         # cjk radicals supplement
-      {"from": ord(u"\u4e00"), "to": ord(u"\u9fff")},
-      {"from": ord(u"\u3400"), "to": ord(u"\u4dbf")},
-      {"from": ord(u"\U00020000"), "to": ord(u"\U0002a6df")},
-      {"from": ord(u"\U0002a700"), "to": ord(u"\U0002b73f")},
-      {"from": ord(u"\U0002b740"), "to": ord(u"\U0002b81f")},
-      {"from": ord(u"\U0002b820"), "to": ord(u"\U0002ceaf")}  # included as of Unicode 8.0
+      {"from": ord(u"\u3300"), "to": ord(u"\u33ff")},           # compatibility ideographs; https://en.wikipedia.org/wiki/CJK_Compatibility
+      {"from": ord(u"\ufe30"), "to": ord(u"\ufe4f")},           # compatibility ideographs; https://en.wikipedia.org/wiki/CJK_Compatibility_Forms
+      {"from": ord(u"\uf900"), "to": ord(u"\ufaff")},           # compatibility ideographs; https://en.wikipedia.org/wiki/CJK_Compatibility_Ideographs
+      {"from": ord(u"\U0002F800"), "to": ord(u"\U0002fa1f")},   # compatibility ideographs; https://en.wikipedia.org/wiki/CJK_Compatibility_Ideographs_Supplement
+      {'from': ord(u'\u3040'), 'to': ord(u'\u309f')},           # Japanese Hiragana
+      {"from": ord(u"\u30a0"), "to": ord(u"\u30ff")},           # Japanese Katakana
+      {"from": ord(u"\u2e80"), "to": ord(u"\u2eff")},           # cjk radicals supplement
+      {"from": ord(u"\u4e00"), "to": ord(u"\u9fff")},           # ???
+      {"from": ord(u"\u3400"), "to": ord(u"\u4dbf")},           # ???
+      {"from": ord(u"\U00020000"), "to": ord(u"\U0002a6df")},   # ???
+      {"from": ord(u"\U0002a700"), "to": ord(u"\U0002b73f")},   # ???
+      {"from": ord(u"\U0002b740"), "to": ord(u"\U0002b81f")},   # ???
+      {"from": ord(u"\U0002b820"), "to": ord(u"\U0002ceaf")}    # included as of Unicode 8.0
     ]
     return any([r["from"] <= ord(char) <= r["to"] for r in cjk_ranges])
 
@@ -140,7 +147,8 @@ def removeImagesWithoutCJK(img_paths, filter_ocr):
     Finds subset of img_paths for which filter_ocr OCR system extracts at least one CJK character
     """
     subset_img_paths = []
-    for img_path in img_paths:
+    for i, img_path in enumerate(img_paths):
+        print(f"Requesting {filter_ocr} check for CJK text in img # {i} of {len(img_paths)}...")
         ocr_text_extract = ocr(img_path, ocr=filter_ocr)
         if any([is_cjk(c) for c in ocr_text_extract]):
             subset_img_paths.append(img_path)
@@ -164,8 +172,9 @@ delay=1, ocr_system="google_ocr", filter_ocr=None):
                                         #start_num=start_num, end_num=end_num) # NOTE we think of #'ing as after uniqueness filter
     print(f"OCR sequence extract fxn found {len(img_paths)} files in target location {target_folder}")
     if filter_ocr:
+        init_count = len(img_paths)
         img_paths = removeImagesWithoutCJK(img_paths, filter_ocr)
-        print(f"After OCR filtering, {len(img_paths)} remain in input image sequence")
+        print(f"After OCR filtering, of initial {init_count}, {len(img_paths)} remain in input image sequence")
     img_paths = img_paths if not end_num else img_paths[:end_num]
     img_paths = img_paths[start_num:]
     num_imgs = len(img_paths)
@@ -215,13 +224,13 @@ def tokenize_jp(read_file="test/STEP1_sequence_dump.json", write_file="test/STEP
     print(f"Wrote {len(tokens_dict)} tokenized lines to: {write_file}")
 
 def get_token_translations( read_file="test/STEP2_tokenized_sequence_dump.json", method="Jisho", num_token_translations=None, delay=1,
-out_file="test/STEP3_tokens_translated.json"):
+write_file="test/STEP3_tokens_translated.json"):
     """
     STEP 3
     Looks up tokens in Jisho.
     """
     # TODO add DeepL, Google Translate, ChatGPT, etc as translation options?
-    assert read_file != out_file
+    assert read_file != write_file
     with open(read_file, 'r', encoding='utf8') as rf:
         tokenized_json = json.load(rf)
 
@@ -246,9 +255,9 @@ out_file="test/STEP3_tokens_translated.json"):
                 break
         if num_token_translations and cur_token_index >= num_token_translations:
             break
-    with open(out_file, 'w', encoding='utf8') as of:
+    with open(write_file, 'w', encoding='utf8') as of:
         json.dump(img2token2sentence2defns, of, ensure_ascii=False) 
-    print(f"Wrote {len(img2token2sentence2defns)} tokens' translations to: {out_file}")
+    print(f"Wrote {len(img2token2sentence2defns)} tokens' translations to: {write_file}")
 
 def generateAnkiImportableTxt(  read_file="test/STEP3_tokens_translated.json", write_file="test/STEP4_tokens_translated_anki_importable.txt",
 filter_files=["auxiliary_inputs/wanikani_all_vocab.txt", "auxiliary_inputs/jlpt_N2_to_N5_notWK.txt"],
@@ -481,7 +490,7 @@ def main():
     Functions in this script are meant to be invoked from cmd-line via Fire. Simple example of processing pipeline, from OCR to Anki-importable txt:
     STEP 1:     python analyze_img_sequence.py extract_text_from_img_sequence --filter_ocr="easy_ocr" --img_type="jpg"
     STEP 2:     python analyze_img_sequence.py tokenize_jp --read_file="test/STEP1_sequence_sample_images_small_dump.json" --write_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json"
-    STEP 3:     python analyze_img_sequence.py get_token_translations --read_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json" --out_file="test/STEP3_tokens_translated_sample_images_small.json"
+    STEP 3:     python analyze_img_sequence.py get_token_translations --read_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json" --write_file="test/STEP3_tokens_translated_sample_images_small.json"
     STEP 4:     python analyze_img_sequence.py generateAnkiImportableTxt --read_file="test/STEP3_tokens_translated_sample_images_small.json" --write_file="test/STEP4_tokens_translated_anki_importable_sample_images_small.txt"
 
     NOTE: for images to work properly in Anki, the source images in the STEP 1 <target_folder> should be copied to %APPADATA%\Anki2\ for Windows, to
