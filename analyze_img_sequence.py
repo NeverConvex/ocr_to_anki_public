@@ -84,6 +84,19 @@ def getFrameNum(impath, img_type):
     frame_num = int(impath[impath.rfind("frame")+len("frame"):impath.rfind(f".{img_type}")])
     return frame_num
 
+def extract_tokens_from_html_lines(lines):
+    google_jp_IME_space = "　"
+    tokens = []
+    for l in lines:
+        if "jisho.org" in l and any(is_cjk(c) for c in l):
+            l = l.strip().replace(" - Jisho.org", '').replace("<DT>", '')
+            l = l[l.find(">")+1:l.find("</A")]
+            cur_tokens = l.split(google_jp_IME_space)
+            print(f"In {l}, found cur_tokens: {cur_tokens}")
+            tokens += cur_tokens
+    print(f"Found {len(tokens)} tokens: {tokens}")
+    return tokens
+
 def is_cjk(char):
     """
     Used to check for presence of at least one Japanese kanji/kana. See: https://stackoverflow.com/a/30070664/4286018
@@ -257,33 +270,60 @@ write_file="test/STEP3_tokens_translated.json"):
     """
     STEP 3
     Looks up tokens in Jisho.
+
+    If read_file
+        : ends in .json, input tokens are directly read from JSON (assumed to come from previous OCR pipeline)
+        : ends in .html, input tokens are parsed from HTML (assumed to come from Chrome bookmarks export)
     """
     # TODO add DeepL, Google Translate, ChatGPT, etc as translation options?
     assert read_file != write_file
-    with open(read_file, 'r', encoding='utf8') as rf:
-        tokenized_json = json.load(rf)
 
-    tokens_queried = set()
+    read_basename, read_ext = os.path.splitext(os.path.basename(read_file))
+
     img2token2sentence2defns = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
-    total_num_tokens = sum([len(sentence_tokens) for (input_sentence, sentence_tokens) in tokenized_json.values()])
-    cur_token_index = 1
-    for i, (img_path, (input_sentence, sentence_tokens)) in enumerate(tokenized_json.items()):
-        for j, token in enumerate(sentence_tokens):
-            #if not allRomanOrNumber(token):
-            if any([is_cjk(c) for c in token]):
-                if token not in tokens_queried:
-                    tokens_queried.add(token)
-                    print(f"Looking for a definition for token # {cur_token_index} of {total_num_tokens}:  {token}")
-                    jisho_guess = c2a_util.get_word_object(token)
-                    if jisho_guess and 'data' in jisho_guess.keys() and jisho_guess['data']:
-                        img2token2sentence2defns[img_path][token][input_sentence] = jisho_guess['data']
-                    print(f"Jisho returned: {jisho_guess}")
-                    time.sleep(delay) # Don't want to accidentally DDOS the Jisho folks
-            cur_token_index += 1
+    tokens_queried = set()
+
+    if read_ext == ".json":
+        with open(read_file, 'r', encoding='utf8') as rf:
+            tokenized_json = json.load(rf)
+        total_num_tokens = sum([len(sentence_tokens) for (input_sentence, sentence_tokens) in tokenized_json.values()])
+        cur_token_index = 1
+        for i, (img_path, (input_sentence, sentence_tokens)) in enumerate(tokenized_json.items()):
+            for j, token in enumerate(sentence_tokens):
+                #if not allRomanOrNumber(token):
+                if any([is_cjk(c) for c in token]):
+                    if token not in tokens_queried:
+                        tokens_queried.add(token)
+                        print(f"Looking for a definition for token # {cur_token_index} of {total_num_tokens}:  {token}")
+                        jisho_guess = c2a_util.get_word_object(token)
+                        if jisho_guess and 'data' in jisho_guess.keys() and jisho_guess['data']:
+                            img2token2sentence2defns[img_path][token][input_sentence] = jisho_guess['data']
+                        print(f"Jisho returned: {jisho_guess}")
+                        time.sleep(delay) # Don't want to accidentally DDOS the Jisho folks
+                cur_token_index += 1
+                if num_token_translations and cur_token_index >= num_token_translations:
+                    break
             if num_token_translations and cur_token_index >= num_token_translations:
                 break
-        if num_token_translations and cur_token_index >= num_token_translations:
-            break
+    elif read_ext == ".html":
+        with open(read_file, 'r', encoding='utf8') as rf:
+            lines = rf.readlines()
+        tokens = extract_tokens_from_html_lines(lines)
+        print(f"Found {len(tokens)} tokens in total")
+        if num_token_translations:
+            tokens = tokens[:num_token_translations]
+        for cur_token_index, token in enumerate(tokens):
+            if token not in tokens_queried:
+                tokens_queried.add(token)
+                print(f"Looking for a definition for token # {cur_token_index} of {len(tokens)}:  {token}")
+                jisho_guess = c2a_util.get_word_object(token)
+                if jisho_guess and 'data' in jisho_guess.keys() and jisho_guess['data']:
+                    img2token2sentence2defns["None"][token]["None"] = jisho_guess['data']
+                print(f"Jisho returned: {jisho_guess}")
+                time.sleep(delay) # Don't want to accidentally DDOS the Jisho folks
+    else:
+        raise ValueError(f"read-file extension: {read_ext} not recognized")
+
     with open(write_file, 'w', encoding='utf8') as of:
         json.dump(img2token2sentence2defns, of, ensure_ascii=False) 
     print(f"Wrote {len(img2token2sentence2defns)} tokens' translations to: {write_file}")
@@ -351,7 +391,8 @@ write_mode='a', respect_kana_only=True, include_context_img=True):
                                 tags = " "
                                 write_vars = [expr, eng_dfns, parts_of_speech, reading, grammar, adddefn, formality, tags]
                                 if include_context_img:
-                                    write_vars.append(os.path.basename(img_path))
+                                    written_img_path = img_path if img_path != "None" else ""
+                                    write_vars.append(os.path.basename(written_img_path))
                                 write_line = '\t'.join(write_vars) + '\n'
                                 wf.write(write_line)
                                 lines_written += 1
