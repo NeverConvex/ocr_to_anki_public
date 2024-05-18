@@ -4,14 +4,29 @@ import JapaneseTokenizer, fire, cv2, easyocr
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 # Standard modules
-import time, os, pathlib, glob, string, json, path, warnings, random, shutil
+import time, os, pathlib, glob, string, json, path, warnings, random, shutil, decimal, importlib
 from collections import defaultdict
 
 # Home-grown modules
-import google_ocr, easyocr
+import google_ocr
 import chrome2anki_repo.util as c2a_util
+all_ocrs = ["easyocr", "google.cloud.vision", "azure.ai.vision.imageanalysis"] # TODO add Tesseract, Texract support?
+available_ocrs = [] # TODO use available_ocrs to check for invalid user args below and give helpful error messages
+unavailable_ocrs = []
+# General TODO: add Azure AI OCR support
+# NOTE  AWS Textract reportedly works very well, but does not support Japanese as of 6/18/24:
+#           https://docs.aws.amazon.com/textract/latest/dg/textract-best-practices.html#optimal-document
+#       Tesseract does not seem to work well at all in practice without extensive image prep
 
-# General TODO: add textract, tesseract support (though early tests with Tesseract were not encouraging)
+def checkAvailableOCRs():
+    for lib_name in all_ocrs:
+        try:
+            cur_lib = importlib.import_module(lib_name)
+            available_ocrs.append(lib_name)
+        except:
+            unavailable_ocrs.append(lib_name)
+    print(f"These OCRs appear to be available and properly configured (Python can import them): {available_ocrs}")
+    print(f"Importing failed for these OCRs: {unavailable_ocrs}")
 
 def resize_all_images(input_folder, output_folder, downsize_factor=None, new_size=(None, None), img_type="jpeg"):
     """
@@ -51,7 +66,7 @@ def ocr(img_path, ocr="google_ocr"):
     """
     Wrapper for generic OCR system access, to extract string text from img
 
-    ocr options: google_ocr, easy_ocrtextract
+    ocr options: google_ocr, easy_ocr
     """
     ocr_dict =  {
                     "google_ocr":google_ocr.pic_to_text,
@@ -265,6 +280,7 @@ def tokenize_jp(read_file="test/STEP1_sequence_dump.json", write_file="test/STEP
         json.dump(tokens_dict, wf, ensure_ascii=False) 
     print(f"Wrote {len(tokens_dict)} tokenized lines to: {write_file}")
 
+# TODO camel-case for all fxn names
 def get_token_translations( read_file="test/STEP2_tokenized_sequence_dump.json", method="Jisho", num_token_translations=None, delay=1,
 write_file="test/STEP3_tokens_translated.json"):
     """
@@ -370,8 +386,13 @@ write_mode='a', respect_kana_only=True, include_context_img=True):
                             reading = jisho_dict['japanese'][0]['reading']
                             kana_str = "Usually written using kana alone"
                             kana_only_bools = [kana_str in s['tags'] for s in jisho_dict['senses']]
-                            kana_only = round(sum(kana_only_bools)/len(kana_only_bools))
-                            # NOTE that this may not match the requested expression, since Jisho has interpreted our request:
+                            #kana_only = round(sum(kana_only_bools)/len(kana_only_bools)) # Rounds 0.5 to 0; prefer to give tie to kana-only
+                            # TODO remove wiki defn from consideration in performing kana-only calculation? Give preference to earlier defns?
+                            kana_only = False
+                            with decimal.localcontext() as ctx:
+                                ctx.rounding = decimal.ROUND_HALF_UP # 0.5 rounds to 1
+                                kana_only = int(decimal.Decimal(sum(kana_only_bools)/len(kana_only_bools)).to_integral_value())
+                            # NOTE that this may not match the requested expression, since Jisho has interpreted (e.g., further tokenized) our request:
                             expr = base_expr = reading
                             if 'word' in jisho_dict['japanese'][0].keys():
                                 expr = base_expr = jisho_dict['japanese'][0]['word']
@@ -408,7 +429,7 @@ input_json_path=None, input_sequence_folder=None, img_type="jpg"):
     text of these images to the user, prompting them to input indicate how many images had text correctly extracted. Modeling the percent of 
     correctly OCR'd images (from the set of those available locally) as the success probability of a binomial distribution, presents a
     ci_perc Clopper-Pearson confidence interval (exact, i.e., always achieves at least coverage probability, though can be quite conservative).
-    Primary purpose is to support decision-making about whether alternative competing commercial (e.g., google_ocr, textract) systems
+    Primary purpose is to support decision-making about whether alternative competing commercial (e.g., google_ocr, Azure AI OCR) systems
     are preferable to one another, or if an open-source alternative (e.g., easy_ocr, tesseract) may even be viable.
 
     Currently supported ocr_system options: None (but extract_text_from_img_sequence can be used to generate a suitable JSON)
@@ -574,4 +595,5 @@ if __name__ == "__main__":
     """
     Example run cmds:
     """
+    checkAvailableOCRs()
     fire.Fire()
