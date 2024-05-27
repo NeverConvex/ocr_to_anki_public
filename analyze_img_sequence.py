@@ -3,9 +3,16 @@ import numpy as np
 import JapaneseTokenizer, fire, cv2, easyocr
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
+# TODO add fugashi support for tokenization, as well as CI estimation for tokenization correctness
+"""
+In [1]: import fugashi                                                                                                                                                                                                                                                                                                      In [2]: text = "麩菓子は、麩を主材料とした日本の菓子。"                                                                                                                                                                                                                                                                     In [3]: tagger = fugashi.Tagger()                                                                                                                                                                                                                                                                                           In [4]: words = [word.surface for word in tagger(text)]                                                                                                                                                                                                                                                                     In [5]: print(words)                                                                                                                                          ['麩', '菓子', 'は', '、', '麩', 'を', '主材', '料', 'と', 'し', 'た', '日本', 'の', '菓子', '。']
+"""
+
 # Standard modules
 import time, os, pathlib, glob, string, json, path, warnings, random, shutil, decimal, importlib
 from collections import defaultdict
+from collections.abc import Iterable
+from copy import deepcopy
 
 # Home-grown modules
 import google_ocr
@@ -18,6 +25,65 @@ unavailable_ocrs = []
 #           https://docs.aws.amazon.com/textract/latest/dg/textract-best-practices.html#optimal-document
 #       Tesseract does not seem to work well at all in practice without extensive image prep
 
+# TODO deepDict/deepGet would be pretty natural developed into methods of a recursive defaultdict class (extending existing defaultdict?)
+# TODO deepDict usage concept:
+#   1. without tokenizing, take all 1-gram to 4-grams as candidate multi-keys
+#   2. for any such k-gram that has a valid jisho entry, retain it as an actual multi-key
+#   3. convert each character separately to a k, with "" used for <=3-grams, so a depth-5 deepDict is sufficient
+#   4. for values, use structure like [(img_path # i, jisho entries # i), ...], which has en entry for each img with this k-gram in it
+#   The motivation is that in searching OCR'd text to find an image pertinent to an entry manually entered into Jisho, we would normally
+#   have to scan the list of images and use a list `in` for each image's OCR text. Repeating this for every search token would take
+#   roughly #tokens * #imgs * #avg_ocr_text_len time
+#   But with the deepDict, we can in constant time determine if the leading 4 characters of the search entry appear in any OCR text
+#   (note: if we trusted tokenizers completely, we could use a deepDict with depth equal to the max len of a token to get a unique img path
+#   in constant time)
+#   This will likely do least well with e.g. verb conjugations
+#   We may want to separately search on kana and kanji versions of each token, since we won't know which the dict is likely to have
+def deepDict(cur_depth, default_val):
+    """
+    Builds arbitrary-depth defaultdicts.
+    """
+    if cur_depth > 1:
+        return defaultdict(lambda: deepDict(cur_depth-1, default_val))
+    return defaultdict(lambda: deepcopy(default_val))
+
+def deepGet(inner_dict, keys):
+    if len(keys)>1:
+        return deepGet(inner_dict[keys[0]], keys[1:])
+    return inner_dict[keys[0]]
+
+def buildNGramDeepDict(context_img_json_paths, n=4, savepath=None, mode=None):
+    """
+    ngram_dict maps tokens, split along first 4 chars, to a list of (img_path, ocr_text) pairs, rpadded by blanks. e.g.,
+    間違いcan be accessed like:
+        ngram_dict["間"]["違"]["い"][""][img_path]
+    and this returns the corresponding ocr_text in the image found at img_path.
+    or {} iff no img_path was found to contain the partial string 間違い.
+    """ 
+    if savepath:
+        if mode != "OVERWRITE":
+            assert not os.path.isfile(savepath), f"{savepath} already exists, and mode is {mode}, not OVERWRITE."
+    # TODO add a layer that tracks OCR system used as well? But we don't currently store this in the input JSONs; requires change elsewhere
+    ngram_dict = deepDict(n, {})
+    # context_img_jsons are assumed to map img_path -> ocr_text, as in the output from STEP 1 extractTextFromImgSequence below
+    for jsp in context_img_json_paths:
+         with open(jsp, 'r', encoding='utf8') as rf:
+            ci_json = json.load(rf)
+            for img_path, ocr_text in ci_json.items():
+                for token_len in range(1, n+1):
+                    for i in range(max(len(ocr_text) - token_len, 0) + 1):
+                        igram = ocr_text[i:i+token_len]
+                        if ' ' not in igram:
+                            igram = igram.ljust(n) # Right-pad with ' ' to allow non-max-len tokens as uniform-depth dict keys
+                            if '\n' not in igram and isCJK(igram[0]):
+                                print(f"From {ocr_text}, start_pos {i} len {token_len} igram: {igram}")
+                                deepGet(ngram_dict, igram[:-1])[igram[-1]][img_path] = ocr_text
+    if savepath:
+        with open(savepath, 'w', encoding='utf-8') as wf:
+            json.dump(ngram_dict, wf, ensure_ascii=False)
+    return ngram_dict
+
+# TODO add checkAvailableTokenizers
 def checkAvailableOCRs():
     for lib_name in all_ocrs:
         try:
@@ -28,7 +94,7 @@ def checkAvailableOCRs():
     print(f"These OCRs appear to be available and properly configured (Python can import them): {available_ocrs}")
     print(f"Importing failed for these OCRs: {unavailable_ocrs}")
 
-def resize_all_images(input_folder, output_folder, downsize_factor=None, new_size=(None, None), img_type="jpeg"):
+def resizeAllImages(input_folder, output_folder, downsize_factor=None, new_size=(None, None), img_type="jpeg"):
     """
     A helper fxn used outside the normal workflow. Storing full-resolution images in Anki media can be costly; this allows us to create mass-downscaled
     copies of images, without changing their names, so that we can copy the cheaper images over into Anki's media folder.
@@ -36,7 +102,7 @@ def resize_all_images(input_folder, output_folder, downsize_factor=None, new_siz
     # NOTE: does not preserve image type, nor suffix, always forces output to jpg
     assert downsize_factor or new_size[0]
     input_img_paths = glob.glob(f"{input_folder}/*.{img_type}")
-    print(f"resize_all_images detected # {len(input_img_paths)} input images")
+    print(f"resizeAllImages detected # {len(input_img_paths)} input images")
     for input_img_path in input_img_paths:
         img = Image.open(input_img_path)
         orig_w, orig_h = img.size
@@ -54,7 +120,7 @@ def copyOnlyFilesInAnkiImportable(path_to_importable, input_folder, output_folde
         img_basename, orig_ext = os.path.splitext(img_name)
         shutil.copyfile(f"{input_folder}/{img_basename}.jpg", f"{output_folder}/{img_name}") # NOTE: .jpg assumes resized fxn was called
 
-def easy_ocr_pic_to_text(img_path, verbose=True):
+def easyOCRPicToText(img_path, verbose=True):
     reader = easyocr.Reader(['ja'])
     res = reader.readtext(img_path)
     ocr_text_extract = "" if len(res)==0 else res[0][1]
@@ -70,12 +136,12 @@ def ocr(img_path, ocr="google_ocr"):
     """
     ocr_dict =  {
                     "google_ocr":google_ocr.pic_to_text,
-                    "easy_ocr"  :easy_ocr_pic_to_text,
+                    "easy_ocr"  :easyOCRPicToText,
                 }
     ocr_text_extract = ocr_dict[ocr](img_path)
     return ocr_text_extract
 
-def vec_dot(list1, list2):
+def vecDot(list1, list2):
     """
     numpy operations often run into overflow errors with large screenshots, so we implement this to work only with Python BigInts.
     """
@@ -84,14 +150,14 @@ def vec_dot(list1, list2):
         total += val1 * val2
     return total
 
-def img_diff(im1, im2):
+def imgDiff(im1, im2):
     if im1.size != im2.size:
         print(f"im1, im2 sizes non-identical: {im1.size}, {im2.size}")
         return 1.0
     diff_ub = int(np.product(im1.size)) * 3 * 255
     diff_vec    = ImageChops.difference(im1, im2).histogram() # NOTE this was np.array, but ran into overflow errors
     wt_vec      = list(range(256)) * 3
-    normalized_diff = vec_dot(diff_vec, wt_vec) / diff_ub
+    normalized_diff = vecDot(diff_vec, wt_vec) / diff_ub
     assert 0. <= normalized_diff <= 1.0, f"Normalized diff outside [0, 1]: {normalized_diff}"
     return normalized_diff
 
@@ -99,11 +165,11 @@ def getFrameNum(impath, img_type):
     frame_num = int(impath[impath.rfind("frame")+len("frame"):impath.rfind(f".{img_type}")])
     return frame_num
 
-def extract_tokens_from_html_lines(lines):
+def extractTokensFromHtmlLines(lines):
     google_jp_IME_space = "　"
     tokens = []
     for l in lines:
-        if "jisho.org" in l and any(is_cjk(c) for c in l):
+        if "jisho.org" in l and any(isCJK(c) for c in l):
             l = l.strip().replace(" - Jisho.org", '').replace("<DT>", '')
             l = l[l.find(">")+1:l.find("</A")]
             cur_tokens = l.split(google_jp_IME_space)
@@ -112,7 +178,7 @@ def extract_tokens_from_html_lines(lines):
     print(f"Found {len(tokens)} tokens: {tokens}")
     return tokens
 
-def is_cjk(char):
+def isCJK(char):
     """
     Used to check for presence of at least one Japanese kanji/kana. See: https://stackoverflow.com/a/30070664/4286018
     This code is near-identical to the stack answer, with minor renaming for readability/avoiding reserved variable names
@@ -145,7 +211,7 @@ def is_cjk(char):
     ]
     return any([r["from"] <= ord(char) <= r["to"] for r in cjk_ranges])
 
-def find_sequence_uniques(target_folder="test/STEP0_sequence_sample_images_small", img_type="jpeg",
+def findSequenceUniques(target_folder="test/STEP0_sequence_sample_images_small", img_type="jpeg",
 uniqueness_threshold=0.05, start_num=0, end_num=None, count_only=False):
     """
     Given a target folder ending in frame<num>, inspects all images with suffix img_type and removes those that appear to be near-unique,
@@ -183,7 +249,7 @@ uniqueness_threshold=0.05, start_num=0, end_num=None, count_only=False):
                 cur_img_path = img_path
                 num_unique_imgs += 1
             else:
-                img_diff_magnitude = img_diff(cur_img, new_img)
+                img_diff_magnitude = imgDiff(cur_img, new_img)
                 if img_diff_magnitude>uniqueness_threshold:
                     print(f"Detected image difference b/w {cur_img_path} and {img_path}: {img_diff_magnitude}")
                     cur_img = new_img
@@ -207,11 +273,11 @@ def removeImagesWithoutCJK(img_paths, filter_ocr):
     for i, img_path in enumerate(img_paths):
         print(f"Requesting {filter_ocr} check for CJK text in img # {i} of {len(img_paths)}...")
         ocr_text_extract = ocr(img_path, ocr=filter_ocr)
-        if any([is_cjk(c) for c in ocr_text_extract]):
+        if any([isCJK(c) for c in ocr_text_extract]):
             subset_img_paths.append(img_path)
     return subset_img_paths
 
-def extract_text_from_img_sequence(target_folder="test/STEP0_sequence_sample_images_small", img_type="jpeg",
+def extractTextFromImgSequence(target_folder="test/STEP0_sequence_sample_images_small", img_type="jpeg",
 uniqueness_threshold=0.05, write_file="test/STEP1_sequence_sample_images_small_dump.txt", start_num=0, end_num=None, write_mode='a',
 delay=1, ocr_system="google_ocr", filter_ocr=None):
     """
@@ -225,7 +291,7 @@ delay=1, ocr_system="google_ocr", filter_ocr=None):
     # TODO not accurate enough to correctly extract it, (but, alternatives like Tesseract don't even seem to detect text reliably)
     # TODO because these are images we don't have to feed to the Google Vision API, which costs both $$ and time.
     # TODO 2. Also allow detection of Latin alphabet, but our primary interest is in CJK, and specifically Japanese, characters
-    img_paths = find_sequence_uniques(  target_folder=target_folder, img_type=img_type, uniqueness_threshold=uniqueness_threshold)
+    img_paths = findSequenceUniques(  target_folder=target_folder, img_type=img_type, uniqueness_threshold=uniqueness_threshold)
                                         #start_num=start_num, end_num=end_num) # NOTE we think of #'ing as after uniqueness filter
     print(f"OCR sequence extract fxn found {len(img_paths)} files in target location {target_folder}")
     if filter_ocr:
@@ -256,7 +322,7 @@ delay=1, ocr_system="google_ocr", filter_ocr=None):
 def allRomanOrNumber(sentence):
     return np.all([c in string.printable for c in sentence])
 
-def tokenize_jp(read_file="test/STEP1_sequence_dump.json", write_file="test/STEP2_tokenized_sequence_dump.json"):
+def tokenizeJP(read_file="test/STEP1_sequence_dump.json", write_file="test/STEP2_tokenized_sequence_dump.json"):
     """
     STEP 2
     Tokenizes lines in sequence_dump. Only tokenizes a line if it is detected as containing at least one CJK character.
@@ -271,7 +337,7 @@ def tokenize_jp(read_file="test/STEP1_sequence_dump.json", write_file="test/STEP
 
     for i, (img_path, input_sentence) in enumerate(input_json.items()):
         input_sentence = input_sentence.strip()
-        if any([is_cjk(c) for c in input_sentence]):
+        if any([isCJK(c) for c in input_sentence]):
             print(f"Tokenizing input sentence # {i} of {len(input_json)}: {input_sentence}")
             tok = jpp.tokenize(input_sentence) 
             tokens_as_list = tok.convert_list_object() 
@@ -280,16 +346,16 @@ def tokenize_jp(read_file="test/STEP1_sequence_dump.json", write_file="test/STEP
         json.dump(tokens_dict, wf, ensure_ascii=False) 
     print(f"Wrote {len(tokens_dict)} tokenized lines to: {write_file}")
 
-# TODO camel-case for all fxn names
-def get_token_translations( read_file="test/STEP2_tokenized_sequence_dump.json", method="Jisho", num_token_translations=None, delay=1,
-write_file="test/STEP3_tokens_translated.json"):
+def getTokenTranslations( read_file="test/STEP2_tokenized_sequence_dump.json", method="Jisho", num_token_translations=None, delay=1,
+write_file="test/STEP3_tokens_translated.json", context_img_json_glob_exprs=None):
     """
     STEP 3
     Looks up tokens in Jisho.
 
     If read_file
-        : ends in .json, input tokens are directly read from JSON (assumed to come from previous OCR pipeline)
-        : ends in .html, input tokens are parsed from HTML (assumed to come from Chrome bookmarks export)
+        : ends in .json:    - input tokens are directly read from JSON (assumed to come from previous OCR pipeline)
+        : ends in .html:    - input tokens are parsed from HTML (assumed to come from Chrome bookmarks export)
+                            - context_img_json_glob_exprs is used to find JSONs to search for relevant context images 
     """
     # TODO add DeepL, Google Translate, ChatGPT, etc as translation options?
     assert read_file != write_file
@@ -299,15 +365,14 @@ write_file="test/STEP3_tokens_translated.json"):
     img2token2sentence2defns = defaultdict(lambda: defaultdict(lambda: defaultdict(str)))
     tokens_queried = set()
 
-    if read_ext == ".json":
+    if read_ext == ".json": # Assumes json format as generated in STEP2
         with open(read_file, 'r', encoding='utf8') as rf:
             tokenized_json = json.load(rf)
         total_num_tokens = sum([len(sentence_tokens) for (input_sentence, sentence_tokens) in tokenized_json.values()])
         cur_token_index = 1
         for i, (img_path, (input_sentence, sentence_tokens)) in enumerate(tokenized_json.items()):
             for j, token in enumerate(sentence_tokens):
-                #if not allRomanOrNumber(token):
-                if any([is_cjk(c) for c in token]):
+                if any([isCJK(c) for c in token]):
                     if token not in tokens_queried:
                         tokens_queried.add(token)
                         print(f"Looking for a definition for token # {cur_token_index} of {total_num_tokens}:  {token}")
@@ -321,10 +386,22 @@ write_file="test/STEP3_tokens_translated.json"):
                     break
             if num_token_translations and cur_token_index >= num_token_translations:
                 break
-    elif read_ext == ".html":
+    elif read_ext == ".html": # Assumes bookmarks html format as exported from Chrome browser
+        # Optionally, build deep default dict to search over for relevant context images
+        token2img2ocr = None
+        if context_img_json_glob_exprs:
+            assert isinstance(context_img_json_glob_exprs, Iterable)
+            context_img_json_paths = []
+            for glob_expr in context_img_json_glob_exprs:
+                context_img_json_paths += glob.glob(glob_expr)
+            assert all([cijp.endswith(".json") for cijp in context_img_json_paths])
+            print(f"Building {n}-gram DeepDict to find relevant images for context...")
+            token2img2ocr = buildNGramDeepDict(context_img_json_paths, n=4, savepath=None, mode=None)
+
+        # Search for token defns in jisho
         with open(read_file, 'r', encoding='utf8') as rf:
             lines = rf.readlines()
-        tokens = extract_tokens_from_html_lines(lines)
+        tokens = extractTokensFromHtmlLines(lines)
         print(f"Found {len(tokens)} tokens in total")
         if num_token_translations:
             tokens = tokens[:num_token_translations]
@@ -334,7 +411,25 @@ write_file="test/STEP3_tokens_translated.json"):
                 print(f"Looking for a definition for token # {cur_token_index} of {len(tokens)}:  {token}")
                 jisho_guess = c2a_util.get_word_object(token)
                 if jisho_guess and 'data' in jisho_guess.keys() and jisho_guess['data']:
-                    img2token2sentence2defns["None"][token]["None"] = jisho_guess['data']
+                    if token2img2ocr is None:
+                        img2token2sentence2defns["None"][token]["None"] = jisho_guess['data']
+                    else:
+                        tk = token.ljust(4) # tk for 'token as key'
+                        img_path_dict = token2img2ocr[tk[0]][tk[1]][tk[2]][tk[3]]
+                        img_path, ocr_text = "None", "None"
+                        for tmp_img_path, tmp_ocr_text in img_path_dict.items():
+                            if token in tmp_ocr_text:
+                                img_path, ocr_text = tmp_img_path, tmp_ocr_text
+                                print(f"For {token}, found context img {img_path} with text: {ocr_text}")
+                                break # Accept the first image we think contains this token
+                                #(This generates a false positive if token is part of a larger word;
+                                # but we can only fix that if we choose to trust a tokenizer, which would give false negatives. TODO implement 
+                                # optional tokenizer support here, so we can easily compare the two approaches. Also consider a hybrid option:
+                                # take first tokenizer match if any available, but if no tokenizer matches, take first string membership match.
+                                # will yield exactly as many images as basic string membership approach, but should reduce false positives. May
+                                # additionally add an option to limit this search to tokens containing kanji, or even to kanji-only tokens; 
+                                # tokenization issues should be more limited especially with len>1 kanji-only tokens)
+                        img2token2sentence2defns[img_path][token][ocr_text] = jisho_guess['data']
                 print(f"Jisho returned: {jisho_guess}")
                 time.sleep(delay) # Don't want to accidentally DDOS the Jisho folks
     else:
@@ -346,7 +441,8 @@ write_file="test/STEP3_tokens_translated.json"):
 
 def generateAnkiImportableTxt(  read_file="test/STEP3_tokens_translated.json", write_file="test/STEP4_tokens_translated_anki_importable.txt",
 filter_files=["auxiliary_inputs/wanikani_all_vocab.txt", "auxiliary_inputs/jlpt_N2_to_N5_notWK.txt"],
-write_mode='a', respect_kana_only=True, include_context_img=True):
+write_mode='a', respect_kana_only=True, include_context_img=True,
+auxiliary_context_img_sources=[]):
     """
     STEP 4
     Assumes tab delimiters with fields in order:
@@ -356,7 +452,21 @@ write_mode='a', respect_kana_only=True, include_context_img=True):
 
     respect_kana_only: if jisho says the word is kana only, display reading as part of card expression
                 (each card actually has several defns; we do this if the majority of them have 'kana only'; typically all-or-nothing)
+
+    auxiliary_context_img_sources: list of strings passed as expressions to glob to determine a set of auxiliary JSONs. For tokens that do not have
+            a context img_path, these JSONs will be searched for any sentence containing the token, and its img_path will be supplied
+            as the context img_path here. Auxiliary JSONs are expected to be of the img2token2sentence2defns type produced in STEP3.
     """
+    aux_src_img2token2sentence2defns = [] # TODO quadratic-time search for missing entries (slow). Reformat to char-by-char nested dict?
+    if auxiliary_context_img_sources != []:
+        aux_src_files = []
+        for search_expr in auxiliary_context_img_sources:
+            aux_src_files += glob.glob(search_expr)
+        for aux_srcf in aux_src_files:
+            with open(aux_srcf, 'r', encoding='utf8') as rf:
+                ddict = json.load(rf)
+                aux_src_img2token2sentence2defns.append(ddict)
+
     assert read_file != write_file
     # TODO consider option for adding the origin JP sentence itself (w/o image) as context to Anki card?
     filter_exprs = set()
@@ -364,7 +474,7 @@ write_mode='a', respect_kana_only=True, include_context_img=True):
         with open(fname, 'r') as rf:
             lines = rf.readlines()
             for l in lines:
-                if any([is_cjk(c) for c in l]):
+                if any([isCJK(c) for c in l]):
                     filter_exprs.add(l.strip())
     print(f"Received expression filter list with {len(filter_exprs)} entries")
     lines_written = 0
@@ -432,10 +542,10 @@ input_json_path=None, input_sequence_folder=None, img_type="jpg"):
     Primary purpose is to support decision-making about whether alternative competing commercial (e.g., google_ocr, Azure AI OCR) systems
     are preferable to one another, or if an open-source alternative (e.g., easy_ocr, tesseract) may even be viable.
 
-    Currently supported ocr_system options: None (but extract_text_from_img_sequence can be used to generate a suitable JSON)
+    Currently supported ocr_system options: None (but extractTextFromImgSequence can be used to generate a suitable JSON)
             (google_ocr, easy_ocr support to be added later, mimicking fxns above this one, primarily for small-scale testing)
 
-    Note: input_json_path should be a json as output by STEP 1: extract_text_from_img_sequence
+    Note: input_json_path should be a json as output by STEP 1: extractTextFromImgSequence
     """
     assert 1<=sample_size
     assert nrows * ncols <= 9 # Need a more flexible user input system to support user grading of image grids with >=10 images
@@ -579,9 +689,9 @@ input_json_path=None, input_sequence_folder=None, img_type="jpg"):
 def main():
     """
     Functions in this script are meant to be invoked from cmd-line via Fire. Simple example of processing pipeline, from OCR to Anki-importable txt:
-    STEP 1:     python analyze_img_sequence.py extract_text_from_img_sequence --filter_ocr="easy_ocr" --img_type="jpg"
-    STEP 2:     python analyze_img_sequence.py tokenize_jp --read_file="test/STEP1_sequence_sample_images_small_dump.json" --write_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json"
-    STEP 3:     python analyze_img_sequence.py get_token_translations --read_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json" --write_file="test/STEP3_tokens_translated_sample_images_small.json"
+    STEP 1:     python analyze_img_sequence.py extractTextFromImgSequence --filter_ocr="easy_ocr" --img_type="jpg"
+    STEP 2:     python analyze_img_sequence.py tokenizeJP --read_file="test/STEP1_sequence_sample_images_small_dump.json" --write_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json"
+    STEP 3:     python analyze_img_sequence.py getTokenTranslations --read_file="test/STEP2_tokenized_sequence_sample_images_small_dump.json" --write_file="test/STEP3_tokens_translated_sample_images_small.json"
     STEP 4:     python analyze_img_sequence.py generateAnkiImportableTxt --read_file="test/STEP3_tokens_translated_sample_images_small.json" --write_file="test/STEP4_tokens_translated_anki_importable_sample_images_small.txt"
 
     NOTE: for images to work properly in Anki, the source images in the STEP 1 <target_folder> should be copied to %APPADATA%\Anki2\ for Windows, to
