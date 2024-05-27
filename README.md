@@ -37,7 +37,7 @@ If successful, the output of Step 4 should be a file that looks like (though typ
 
 <img src='.github/images/example_anki_importable_txt.jpg' width=461px height=47px>
 
-This can be imported as a deck into Anki via the usual `File->Import` Anki menu option. I don't provide sample Anki cards here, but here is an example of what the final cards might look like:
+This can be imported as a deck into Anki via the usual `File->Import` Anki menu option. I don't provide sample Anki cards here, but here is an example of what the final cards might look like (image from the game _英雄伝説: 零の軌跡_/_Legend of Heroes: Trails from Zero_):
 
 [//]: # "<img src='.github/images/example_anki_card_front.jpg' width=540px height=400px>"
 
