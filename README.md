@@ -39,13 +39,13 @@ If successful, the output of Step 4 should be a file that looks like (though typ
 
 This can be imported as a deck into Anki via the usual `File->Import` Anki menu option. I don't provide sample Anki cards here, but here is an example of what the final cards might look like:
 
-[//]: # <img src='.github/images/example_anki_card_front.jpg' width=540px height=400px>
+[//]: # "<img src='.github/images/example_anki_card_front.jpg' width=540px height=400px>"
 
 <img src='https://i.imgur.com/jtBn7Ig.jpg' width=540px height=400px>
 
 (front)
 
-[//]: # <img src='.github/images/example_anki_card_back.jpg' width=540px height=400px>
+[//]: # "<img src='.github/images/example_anki_card_back.jpg' width=540px height=400px>"
 
 <img src='https://i.imgur.com/gl0YKp9.png' width=540px height=400px>
 
